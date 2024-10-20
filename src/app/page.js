@@ -15,25 +15,49 @@ export default function HomePage() {
     setSearchQuery(e.target.value);
   };
 
+  const validateApiKey = () => {
+    const apiKey = process.env.NEXT_PUBLIC_YOUTUBE_API_KEY;
+    if (!apiKey) {
+      console.error("API key is missing. Please set NEXT_PUBLIC_YOUTUBE_API_KEY in your .env.local file and restart the server.");
+      setChannelName("API 키가 설정되지 않았습니다.");
+      setIsLoading(false);
+      return null;
+    }
+    return apiKey;
+  };
+
+  const fetchChannelData = async (apiKey) => {
+    const response = await fetch(
+      `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${searchQuery}&type=channel&key=${apiKey}`
+    );
+    if (!response.ok) {
+      throw new Error(`YouTube API request failed with status ${response.status}`);
+    }
+    return response.json();
+  };
+
+  const exponentialBackoff = async (fn, retries = 5, delay = 1000) => {
+    try {
+      return await fn();
+    } catch (error) {
+      if (retries > 0 && error.message.includes("quotaExceeded")) {
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        return exponentialBackoff(fn, retries - 1, delay * 2);
+      } else {
+        throw error;
+      }
+    }
+  };
+
   const fetchChannelName = async () => {
     if (searchQuery.trim() === "") return;
 
     setIsLoading(true);
     try {
-      const apiKey = process.env.NEXT_PUBLIC_YOUTUBE_API_KEY;
-      if (!apiKey) {
-        console.error("API key is missing. Please set NEXT_PUBLIC_YOUTUBE_API_KEY in your .env.local file and restart the server.");
-        setChannelName("API 키가 설정되지 않았습니다.");
-        setIsLoading(false);
-        return;
-      }
-      const response = await fetch(
-        `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${searchQuery}&type=channel&key=${apiKey}`
-      );
-      if (!response.ok) {
-        throw new Error(`YouTube API request failed with status ${response.status}`);
-      }
-      const data = await response.json();
+      const apiKey = validateApiKey();
+      if (!apiKey) return;
+
+      const data = await exponentialBackoff(() => fetchChannelData(apiKey));
 
       if (data.items && data.items.length > 0) {
         const channelId = data.items[0].snippet.channelId;
@@ -44,7 +68,11 @@ export default function HomePage() {
       }
     } catch (error) {
       if (error.message.includes("quotaExceeded")) {
+        console.error("API 요청 한도가 초과되었습니다. 잠시 후 다시 시도해 주세요.");
         setChannelName("API 요청 한도가 초과되었습니다. 잠시 후 다시 시도해 주세요.");
+      } else if (error.message.includes("403")) {
+        console.error("API 키가 유효하지 않거나 권한이 없습니다. API 설정을 확인하세요.");
+        setChannelName("API 키가 유효하지 않거나 권한이 없습니다. API 설정을 확인하세요.");
       } else {
         console.error("Failed to fetch channel info:", error);
         setChannelName("오류가 발생했습니다.");
@@ -56,13 +84,13 @@ export default function HomePage() {
 
   const fetchVideoIds = async (channelId) => {
     try {
-      const apiKey = process.env.NEXT_PUBLIC_YOUTUBE_API_KEY;
-      if (!apiKey) {
-        console.error("API key is missing. Please set NEXT_PUBLIC_YOUTUBE_API_KEY in your .env.local file and restart the server.");
-        return;
-      }
+      const apiKey = validateApiKey();
+      if (!apiKey) return;
+
       let nextPageToken = "";
       let allVideoIds = [];
+      let iterationCount = 0;
+      const maxIterations = 5; // Limit the number of iterations to avoid exceeding API rate limits
 
       do {
         const response = await fetch(
@@ -81,7 +109,8 @@ export default function HomePage() {
         }
 
         nextPageToken = data.nextPageToken || "";
-      } while (nextPageToken);
+        iterationCount++;
+      } while (nextPageToken && iterationCount < maxIterations);
 
       setVideoIds(allVideoIds);
       if (allVideoIds.length > 0) {
@@ -94,6 +123,8 @@ export default function HomePage() {
     } catch (error) {
       if (error.message.includes("quotaExceeded")) {
         console.error("API 요청 한도가 초과되었습니다. 잠시 후 다시 시도해 주세요.");
+      } else if (error.message.includes("403")) {
+        console.error("API 키가 유효하지 않거나 권한이 없습니다. API 설정을 확인하세요.");
       } else {
         console.error("Failed to fetch video IDs:", error);
       }
@@ -101,13 +132,13 @@ export default function HomePage() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-sky-300">
+    <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-r from-pink-300 via-purple-300 to-blue-300">
       <header className="w-full py-6"></header>
-      <main className="flex-1 w-full flex flex-col items-center p-8" onKeyPress={(e) => { if (e.key === 'Enter' && !isLoading) fetchChannelName(); }}>
+      <main className="flex-1 w-full flex flex-col items-center p-8" onKeyDown={(e) => { if (e.key === 'Enter' && !isLoading) fetchChannelName(); }}>
         <input
           type="text"
           name="채널검색"
-          className="border border-gray-300 p-2 w-full sm:w-3/4 md:w-1/2 mb-4"
+          className="border border-gray-300 p-2 w-full sm:w-3/4 md:w-1/2 mb-4 text-black"
           placeholder="채널명을 입력하세요"
           value={searchQuery}
           onChange={handleInputChange}
@@ -132,6 +163,9 @@ export default function HomePage() {
             ></iframe>
           </div>
         )}
+        <p className="text-center text-lg text-gray-700 mb-4">
+          YouTube 채널명을 검색하시면 랜덤한 동영상이 표시됩니다.
+        </p>
       </main>
       <footer className="w-full py-4"></footer>
     </div>
